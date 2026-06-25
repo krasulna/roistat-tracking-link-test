@@ -1,0 +1,17 @@
+.notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #e6edf4;
+  border-left: 4px solid #8aa1b5;
+  background: #ffffff;
+  color: #6c7a8d;
+  font-size: 13px;
+}
+
+.notice svg {
+  color: #71879d;
+}
+

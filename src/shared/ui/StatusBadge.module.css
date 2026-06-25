@@ -1,0 +1,30 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border-radius: 3px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.checking {
+  background: #e9f3ff;
+  color: #176dc2;
+}
+
+.success {
+  background: #e8f7ee;
+  color: #217d46;
+}
+
+.warning {
+  background: #fff5db;
+  color: #9a6a00;
+}
+
+.failed {
+  background: #ffe9e9;
+  color: #b83232;
+}
+

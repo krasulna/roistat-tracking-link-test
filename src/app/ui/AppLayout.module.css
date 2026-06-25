@@ -1,0 +1,135 @@
+.shell {
+  min-height: 100vh;
+  background: #f3f5f8;
+  color: #283548;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 10px;
+  background: #202535;
+  color: #dfe7f3;
+  gap: 8px;
+}
+
+.logoButton {
+  border: 0;
+  background: transparent;
+  color: #7cb4ff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+  padding: 0 6px;
+}
+
+.logoButton span {
+  color: #dfe7f3;
+}
+
+.projectSelect {
+  width: min(340px, 36vw);
+  height: 28px;
+  border: 1px solid #42495b;
+  background: #343a4d;
+  color: #f4f7fb;
+  border-radius: 3px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.topbarIcon {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #42495b;
+  border-radius: 3px;
+  background: #343a4d;
+  color: #f4f7fb;
+  cursor: pointer;
+}
+
+.topbarSpacer {
+  flex: 1;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: 176px minmax(0, 1fr);
+  min-height: calc(100vh - 38px);
+}
+
+.sidebar {
+  border-right: 1px solid #d6dce5;
+  background: #ffffff;
+  padding: 10px 7px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 9px;
+  color: #536174;
+  text-decoration: none;
+  border-radius: 3px;
+  font-size: 13px;
+}
+
+.navItem:hover {
+  background: #eef5ff;
+  color: #1d72d2;
+}
+
+.navItemActive {
+  background: #e7f1ff;
+  color: #1d72d2;
+  font-weight: 600;
+}
+
+.sidebarFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 9px;
+  border-top: 1px solid #e5e9f0;
+  color: #7a8798;
+  font-size: 12px;
+}
+
+.content {
+  min-width: 0;
+  padding: 16px;
+}
+
+@media (max-width: 760px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    display: flex;
+    overflow-x: auto;
+    gap: 5px;
+    border-right: 0;
+    border-bottom: 1px solid #d6dce5;
+  }
+
+  .navItem {
+    flex: 0 0 auto;
+  }
+
+  .projectSelect {
+    width: min(260px, 54vw);
+  }
+
+  .sidebarFooter {
+    display: none;
+  }
+}
