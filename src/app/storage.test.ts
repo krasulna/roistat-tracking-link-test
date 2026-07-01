@@ -264,4 +264,84 @@ describe("storage persistence recovery", () => {
     expect(loaded.campaignsByProjectId[project.id][0].sourceId).toBe("source_newsletter_a");
     expect(() => savePersistedState(loaded)).not.toThrow();
   });
+
+  it("remaps duplicate persisted project ids and keeps records on the first project only", () => {
+    const firstProject = createProject({
+      id: "project_same",
+      roistatProjectId: "1001",
+      name: "First project",
+    });
+    const secondProject = createProject({
+      id: "project_same",
+      roistatProjectId: "2002",
+      name: "Second project",
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        schemaVersion: 1,
+        activeProjectId: firstProject.id,
+        projects: [firstProject, secondProject],
+        campaignsByProjectId: {
+          [firstProject.id]: [createCampaign({ id: "campaign_first" })],
+        },
+        historyByProjectId: {
+          [firstProject.id]: [createHistoryItem({ id: "history_first" })],
+        },
+      }),
+    );
+
+    const loaded = loadPersistedState();
+    const firstLoaded = loaded.projects.find((project) => project.roistatProjectId === "1001");
+    const secondLoaded = loaded.projects.find((project) => project.roistatProjectId === "2002");
+
+    expect(loaded.projects).toHaveLength(2);
+    expect(new Set(loaded.projects.map((project) => project.id)).size).toBe(2);
+    expect(firstLoaded?.id).toBe("project_same");
+    expect(secondLoaded?.id).toBeDefined();
+    expect(secondLoaded?.id).not.toBe("project_same");
+    expect(loaded.activeProjectId).toBe(firstLoaded?.id);
+    expect(loaded.campaignsByProjectId[firstLoaded?.id ?? ""]).toHaveLength(1);
+    expect(loaded.campaignsByProjectId[secondLoaded?.id ?? ""]).toEqual([]);
+    expect(loaded.historyByProjectId[firstLoaded?.id ?? ""]).toHaveLength(1);
+    expect(loaded.historyByProjectId[secondLoaded?.id ?? ""]).toEqual([]);
+    expect(() => savePersistedState(loaded)).not.toThrow();
+  });
+
+  it("drops duplicate persisted roistatProjectId projects during recovery", () => {
+    const firstProject = createProject({
+      id: "project_first",
+      roistatProjectId: "1001",
+    });
+    const secondProject = createProject({
+      id: "project_second",
+      roistatProjectId: "1001",
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        schemaVersion: 1,
+        activeProjectId: secondProject.id,
+        projects: [firstProject, secondProject],
+        campaignsByProjectId: {
+          [firstProject.id]: [createCampaign()],
+          [secondProject.id]: [createCampaign({ id: "campaign_second" })],
+        },
+        historyByProjectId: {
+          [firstProject.id]: [createHistoryItem()],
+          [secondProject.id]: [createHistoryItem({ id: "history_second" })],
+        },
+      }),
+    );
+
+    const loaded = loadPersistedState();
+
+    expect(loaded.projects).toHaveLength(1);
+    expect(loaded.projects[0].id).toBe(firstProject.id);
+    expect(loaded.projects[0].roistatProjectId).toBe("1001");
+    expect(loaded.activeProjectId).toBe(firstProject.id);
+    expect(Object.keys(loaded.campaignsByProjectId)).toEqual([firstProject.id]);
+    expect(Object.keys(loaded.historyByProjectId)).toEqual([firstProject.id]);
+    expect(() => savePersistedState(loaded)).not.toThrow();
+  });
 });

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createCampaign, createDraft, createHistoryItem, createProject, createSource } from "../test/factories";
+import { getSettingsFormState, validateSettingsForm } from "../pages/settingsForm";
 import { emptyPersistedState } from "./storage";
 import { useAppStore } from "./store";
 
@@ -156,6 +157,82 @@ describe("app store", () => {
     expect(state.projects[0].allowedSources.map((source) => source.id)).toEqual(["source_google"]);
     expect(state.campaignsByProjectId[project.id]).toEqual([]);
     expect(state.historyByProjectId[project.id][0].details).toContain("Удалены кампании");
+  });
+
+  it("keeps campaigns when saving settings with semicolons in source fields", () => {
+    const project = createProject({
+      allowedSources: [
+        createSource({
+          id: "source_delimited",
+          name: "Foo; Bar",
+          utmSource: "foo;bar",
+          roistatMarker: "foo_bar2",
+          channelId: 2,
+        }),
+      ],
+    });
+    useAppStore.setState({
+      ...emptyPersistedState,
+      activeProjectId: project.id,
+      projects: [project],
+      campaignsByProjectId: {
+        [project.id]: [createCampaign({ sourceId: "source_delimited" })],
+      },
+      historyByProjectId: { [project.id]: [] },
+    });
+    const validation = validateSettingsForm(getSettingsFormState(project), project.allowedSources);
+    expect(validation.ok).toBe(true);
+
+    if (validation.ok) {
+      useAppStore.getState().updateProject(project.id, validation.patch);
+    }
+
+    const state = useAppStore.getState();
+    expect(state.projects[0].allowedSources[0]).toMatchObject({
+      id: "source_delimited",
+      name: "Foo; Bar",
+      utmSource: "foo;bar",
+    });
+    expect(state.campaignsByProjectId[project.id][0].sourceId).toBe("source_delimited");
+  });
+
+  it("keeps campaigns after settings roundtrip for an auto-added semicolon source", () => {
+    const project = createProject();
+    useAppStore.setState({
+      ...emptyPersistedState,
+      activeProjectId: project.id,
+      projects: [project],
+      campaignsByProjectId: { [project.id]: [] },
+      historyByProjectId: { [project.id]: [] },
+    });
+
+    useAppStore.getState().createTrackingLink(
+      project.id,
+      createDraft({
+        utmSource: "foo;bar",
+        utmCampaign: "semicolon_campaign",
+      }),
+    );
+    const projectWithAutoSource = useAppStore.getState().projects.find((item) => item.id === project.id);
+    if (!projectWithAutoSource) {
+      throw new Error("Project was not saved");
+    }
+    const validation = validateSettingsForm(getSettingsFormState(projectWithAutoSource), projectWithAutoSource.allowedSources);
+    expect(validation.ok).toBe(true);
+
+    if (validation.ok) {
+      useAppStore.getState().updateProject(project.id, validation.patch);
+    }
+
+    const state = useAppStore.getState();
+    const autoSource = state.projects[0].allowedSources.find((source) => source.utmSource === "foo;bar");
+    expect(autoSource).toBeDefined();
+    expect(state.campaignsByProjectId[project.id]).toContainEqual(
+      expect.objectContaining({
+        sourceId: autoSource?.id,
+        utmCampaign: "semicolon_campaign",
+      }),
+    );
   });
 
   it("rejects campaigns whose source id does not belong to the project", () => {

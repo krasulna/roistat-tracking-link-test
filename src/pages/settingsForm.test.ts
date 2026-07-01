@@ -176,6 +176,33 @@ describe("settings form validation", () => {
     }
   });
 
+  it("roundtrips source names and utm_source values that contain semicolons", () => {
+    const source = createSource({
+      id: "source_delimited",
+      name: "Foo; Bar",
+      utmSource: "foo;bar",
+      roistatMarker: "foo_bar2",
+      channelId: 2,
+    });
+    const project = createProject({
+      allowedSources: [source],
+    });
+    const form = getSettingsFormState(project);
+    const result = validateSettingsForm(form, project.allowedSources);
+
+    expect(form.sources).toBe('"Foo; Bar";"foo;bar";foo_bar2;2');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.patch.allowedSources[0]).toMatchObject({
+        id: "source_delimited",
+        name: "Foo; Bar",
+        utmSource: "foo;bar",
+        roistatMarker: "foo_bar2",
+        channelId: 2,
+      });
+    }
+  });
+
   it("rejects duplicate utm_source rows", () => {
     const project = createProject();
     const form = getSettingsFormState(project);

@@ -53,6 +53,7 @@ describe("CreateLinkPage", () => {
     });
     const secondProject = createProject({
       id: "project_second",
+      roistatProjectId: "2002",
       trustedDomain: "second.example.com",
       allowedSources: [createSource({ id: "source_second", utmSource: "second_source" })],
     });

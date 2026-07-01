@@ -24,8 +24,114 @@ export type SettingsValidationResult =
   | { ok: true; patch: SettingsProjectPatch }
   | { ok: false; errors: string[] };
 
+type ParsedSourceRow = {
+  fields: string[];
+  rowNumber: number;
+};
+
+function formatSourceField(value: string | number): string {
+  const text = String(value);
+  const needsQuotes = /[;"\r\n]/.test(text);
+
+  return needsQuotes ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function parseSourceRows(value: string): { ok: true; rows: ParsedSourceRow[] } | { ok: false; errors: string[] } {
+  const rows: ParsedSourceRow[] = [];
+  const errors: string[] = [];
+  let fields: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let rowNumber = 1;
+  let currentRowNumber = 1;
+  let fieldHasContent = false;
+
+  function pushField() {
+    fields.push(field.trim());
+    field = "";
+    fieldHasContent = false;
+  }
+
+  function pushRow() {
+    pushField();
+    if (fields.some((item) => item.length > 0)) {
+      rows.push({ fields, rowNumber: currentRowNumber });
+    }
+    fields = [];
+    currentRowNumber = rowNumber + 1;
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (value[index + 1] === '"') {
+          field += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      if (char === "\n") {
+        rowNumber += 1;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      if (field.trim().length === 0) {
+        field = "";
+        inQuotes = true;
+        fieldHasContent = true;
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === ";") {
+      pushField();
+      continue;
+    }
+
+    if (char === "\r" || char === "\n") {
+      pushRow();
+      if (char === "\r" && value[index + 1] === "\n") {
+        index += 1;
+      }
+      rowNumber += 1;
+      currentRowNumber = rowNumber;
+      continue;
+    }
+
+    field += char;
+    if (!/\s/.test(char)) {
+      fieldHasContent = true;
+    }
+  }
+
+  if (inQuotes) {
+    errors.push(`Row ${currentRowNumber}: quoted field is not closed.`);
+  }
+
+  if (fields.length > 0 || fieldHasContent || field.trim().length > 0) {
+    pushRow();
+  }
+
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, rows };
+}
+
 export function sourcesToText(sources: TrafficSource[]): string {
-  return sources.map((source) => `${source.name};${source.utmSource};${source.roistatMarker};${source.channelId}`).join("\n");
+  return sources
+    .map((source) =>
+      [source.name, source.utmSource, source.roistatMarker, source.channelId]
+        .map(formatSourceField)
+        .join(";"),
+    )
+    .join("\n");
 }
 
 export function getSettingsFormState(project?: Project): SettingsFormState {
@@ -62,10 +168,12 @@ export function parseSourcesFromText(
   value: string,
   fallback: TrafficSource[],
 ): { ok: true; sources: TrafficSource[] } | { ok: false; errors: string[] } {
-  const rows = value
-    .split(/\r?\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
+  const parsedRows = parseSourceRows(value);
+  if (!parsedRows.ok) {
+    return parsedRows;
+  }
+
+  const rows = parsedRows.rows;
 
   if (rows.length === 0) {
     return { ok: false, errors: ["Sources list cannot be empty."] };
@@ -78,41 +186,46 @@ export function parseSourcesFromText(
   const usedRoistatMarkers = new Set<string>();
   const usedChannelIds = new Set<number>();
   const sources = rows.map((row, index) => {
-    const [name, utmSource, roistatMarker, channelId] = row.split(";").map((item) => item.trim());
+    const [name, utmSource, roistatMarker, channelId, ...extraFields] = row.fields;
+    const rowLabel = `Row ${row.rowNumber || index + 1}`;
     const existing = fallbackByUtmSource.get(utmSource);
     const parsedChannelId = parsePositiveInteger(channelId);
 
+    if (extraFields.length > 0 || row.fields.length < 4) {
+      errors.push(`${rowLabel}: source row must contain exactly 4 fields.`);
+    }
+
     if (!name) {
-      errors.push(`Row ${index + 1}: name is required.`);
+      errors.push(`${rowLabel}: name is required.`);
     }
 
     if (!utmSource) {
-      errors.push(`Row ${index + 1}: utm_source is required.`);
+      errors.push(`${rowLabel}: utm_source is required.`);
     } else if (usedUtmSources.has(utmSource)) {
-      errors.push(`Row ${index + 1}: utm_source must be unique.`);
+      errors.push(`${rowLabel}: utm_source must be unique.`);
     }
 
     if (parsedChannelId === undefined) {
-      errors.push(`Row ${index + 1}: channel_id must be a positive integer.`);
+      errors.push(`${rowLabel}: channel_id must be a positive integer.`);
     } else if (usedChannelIds.has(parsedChannelId)) {
-      errors.push(`Row ${index + 1}: channel_id must be unique.`);
+      errors.push(`${rowLabel}: channel_id must be unique.`);
     }
 
     if (!roistatMarker) {
-      errors.push(`Row ${index + 1}: roistat_marker is required.`);
+      errors.push(`${rowLabel}: roistat_marker is required.`);
     } else if (usedRoistatMarkers.has(roistatMarker)) {
-      errors.push(`Row ${index + 1}: roistat_marker must be unique.`);
+      errors.push(`${rowLabel}: roistat_marker must be unique.`);
     } else if (!ROISTAT_MARKER_PATTERN.test(roistatMarker)) {
-      errors.push(`Row ${index + 1}: roistat_marker must match ${ROISTAT_MARKER_PATTERN}.`);
+      errors.push(`${rowLabel}: roistat_marker must match ${ROISTAT_MARKER_PATTERN}.`);
     } else if (parsedChannelId !== undefined && !isRoistatMarkerForChannel(roistatMarker, parsedChannelId)) {
       errors.push(
-        `Row ${index + 1}: roistat_marker numeric suffix (${getRoistatMarkerChannelId(roistatMarker)}) must equal channel_id (${parsedChannelId}).`,
+        `${rowLabel}: roistat_marker numeric suffix (${getRoistatMarkerChannelId(roistatMarker)}) must equal channel_id (${parsedChannelId}).`,
       );
     }
 
     const id = existing?.id ?? createUniqueSourceId(utmSource || `source_${index + 1}`, usedIds);
     if (usedIds.has(id)) {
-      errors.push(`Row ${index + 1}: source id must be unique.`);
+      errors.push(`${rowLabel}: source id must be unique.`);
     }
     usedIds.add(id);
     if (utmSource) {

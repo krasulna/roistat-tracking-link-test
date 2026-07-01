@@ -9,6 +9,7 @@ import {
   type Project,
   type TrafficSource,
 } from "../entities/project/model";
+import { createId } from "../shared/lib/id";
 
 export const STORAGE_KEY = "roistat-tracking-link-test";
 export const SCHEMA_VERSION = 1;
@@ -27,6 +28,7 @@ type SourceNormalization = {
 };
 
 type RecoveredProject = {
+  oldProjectId: string;
   project: Project;
   sourceIdRemap: Record<string, string>;
 };
@@ -37,6 +39,29 @@ const persistedAppStateSchema = z.object({
   projects: z.array(projectSchema),
   campaignsByProjectId: z.record(z.string(), z.array(campaignSchema)),
   historyByProjectId: z.record(z.string(), z.array(historyItemSchema)),
+}).superRefine((state, context) => {
+  const projectIds = new Set<string>();
+  const roistatProjectIds = new Set<string>();
+
+  state.projects.forEach((project, index) => {
+    if (projectIds.has(project.id)) {
+      context.addIssue({
+        code: "custom",
+        message: "project ids must be unique.",
+        path: ["projects", index, "id"],
+      });
+    }
+    projectIds.add(project.id);
+
+    if (roistatProjectIds.has(project.roistatProjectId)) {
+      context.addIssue({
+        code: "custom",
+        message: "roistatProjectId values must be unique.",
+        path: ["projects", index, "roistatProjectId"],
+      });
+    }
+    roistatProjectIds.add(project.roistatProjectId);
+  });
 });
 
 export const emptyPersistedState: PersistedAppState = {
@@ -230,7 +255,7 @@ function recoverProject(value: unknown): RecoveredProject | undefined {
   const parsedProject = projectSchema.safeParse(candidate);
 
   return parsedProject.success
-    ? { project: parsedProject.data, sourceIdRemap: normalizedSources.sourceIdRemap }
+    ? { oldProjectId: id, project: parsedProject.data, sourceIdRemap: normalizedSources.sourceIdRemap }
     : undefined;
 }
 
@@ -270,14 +295,61 @@ function remapCampaignSources(
     .filter((campaign) => validSourceIds.has(campaign.sourceId));
 }
 
+function normalizeProjectIdentities(projects: RecoveredProject[]): RecoveredProject[] {
+  const usedProjectIds = new Set<string>();
+  const usedRoistatProjectIds = new Set<string>();
+  const normalizedProjects: RecoveredProject[] = [];
+
+  for (const item of projects) {
+    if (usedRoistatProjectIds.has(item.project.roistatProjectId)) {
+      continue;
+    }
+
+    const projectId = usedProjectIds.has(item.project.id) ? createId("project") : item.project.id;
+    const project = projectId === item.project.id
+      ? item.project
+      : { ...item.project, id: projectId, updatedAt: new Date().toISOString() };
+
+    usedProjectIds.add(project.id);
+    usedRoistatProjectIds.add(project.roistatProjectId);
+    normalizedProjects.push({
+      ...item,
+      project,
+    });
+  }
+
+  return normalizedProjects;
+}
+
+function pickActiveProjectId(projects: RecoveredProject[], requestedActiveProjectId?: string): string | undefined {
+  const activeProject = requestedActiveProjectId
+    ? projects.find((item) => item.oldProjectId === requestedActiveProjectId || item.project.id === requestedActiveProjectId)
+    : undefined;
+
+  return activeProject?.project.id ?? projects[0]?.project.id;
+}
+
+function pickProjectRecords<T>(
+  records: Record<string, T[]>,
+  oldProjectId: string,
+  usedRecordKeys: Set<string>,
+): T[] {
+  if (!records[oldProjectId] || usedRecordKeys.has(oldProjectId)) {
+    return [];
+  }
+
+  usedRecordKeys.add(oldProjectId);
+  return records[oldProjectId];
+}
+
 function recoverPersistedState(value: unknown): PersistedAppState {
   if (!isRecord(value)) {
     return emptyPersistedState;
   }
 
-  const recoveredProjects = (Array.isArray(value.projects) ? value.projects : [])
+  const recoveredProjects = normalizeProjectIdentities((Array.isArray(value.projects) ? value.projects : [])
     .map(recoverProject)
-    .filter((project): project is RecoveredProject => Boolean(project));
+    .filter((project): project is RecoveredProject => Boolean(project)));
   const projects = recoveredProjects.map((item) => item.project);
   const sourceIdRemaps = new Map(recoveredProjects.map((item) => [item.project.id, item.sourceIdRemap]));
 
@@ -285,28 +357,35 @@ function recoverPersistedState(value: unknown): PersistedAppState {
     return emptyPersistedState;
   }
 
-  const projectIds = new Set(projects.map((project) => project.id));
-  const activeProjectId = projectIds.has(readNonEmptyString(value.activeProjectId) ?? "")
-    ? readNonEmptyString(value.activeProjectId)
-    : projects[0]?.id;
+  const activeProjectId = pickActiveProjectId(recoveredProjects, readNonEmptyString(value.activeProjectId));
+  const usedCampaignKeys = new Set<string>();
+  const usedHistoryKeys = new Set<string>();
   const recoveredState: PersistedAppState = {
     schemaVersion: readNonnegativeNumber(value.schemaVersion, SCHEMA_VERSION),
     activeProjectId,
     projects,
     campaignsByProjectId: Object.fromEntries(
-      projects.map((project) => [
+      recoveredProjects.map(({ oldProjectId, project }) => [
         project.id,
         remapCampaignSources(
-          recoverRecordArray(value.campaignsByProjectId, project.id, campaignSchema),
+          pickProjectRecords(
+            { [oldProjectId]: recoverRecordArray(value.campaignsByProjectId, oldProjectId, campaignSchema) },
+            oldProjectId,
+            usedCampaignKeys,
+          ),
           project,
           sourceIdRemaps.get(project.id) ?? {},
         ),
       ]),
     ),
     historyByProjectId: Object.fromEntries(
-      projects.map((project) => [
+      recoveredProjects.map(({ oldProjectId, project }) => [
         project.id,
-        recoverRecordArray(value.historyByProjectId, project.id, historyItemSchema),
+        pickProjectRecords(
+          { [oldProjectId]: recoverRecordArray(value.historyByProjectId, oldProjectId, historyItemSchema) },
+          oldProjectId,
+          usedHistoryKeys,
+        ),
       ]),
     ),
   };
@@ -369,6 +448,31 @@ function hasDuplicateImportedSourceKeys(value: unknown): boolean {
   });
 }
 
+function hasDuplicateImportedRoistatProjectIds(value: unknown): boolean {
+  if (!isRecord(value) || !Array.isArray(value.projects)) {
+    return false;
+  }
+
+  const roistatProjectIds = new Set<string>();
+  for (const project of value.projects) {
+    if (!isRecord(project)) {
+      continue;
+    }
+
+    const roistatProjectId = readNonEmptyString(project.roistatProjectId);
+    if (!roistatProjectId) {
+      continue;
+    }
+
+    if (roistatProjectIds.has(roistatProjectId)) {
+      return true;
+    }
+    roistatProjectIds.add(roistatProjectId);
+  }
+
+  return false;
+}
+
 function migrateTrafficSource(source: TrafficSource): TrafficSource {
   if (source.id !== "source_telegram") {
     return source;
@@ -407,36 +511,37 @@ function migrateProject(project: Project): RecoveredProject {
   });
 
   return {
+    oldProjectId: project.id,
     project: migratedProject,
     sourceIdRemap: normalizedSources.sourceIdRemap,
   };
 }
 
 function migratePersistedState(state: PersistedAppState): PersistedAppState {
-  const migratedProjects = state.projects.map(migrateProject);
+  const migratedProjects = normalizeProjectIdentities(state.projects.map(migrateProject));
   const projects = migratedProjects.map((item) => item.project);
   const sourceIdRemaps = new Map(migratedProjects.map((item) => [item.project.id, item.sourceIdRemap]));
-  const projectIds = new Set(projects.map((project) => project.id));
-  const activeProjectId =
-    state.activeProjectId && projectIds.has(state.activeProjectId) ? state.activeProjectId : projects[0]?.id;
+  const activeProjectId = pickActiveProjectId(migratedProjects, state.activeProjectId);
+  const usedCampaignKeys = new Set<string>();
+  const usedHistoryKeys = new Set<string>();
 
   const migratedState = {
     ...state,
     activeProjectId,
     campaignsByProjectId: Object.fromEntries(
-      projects.map((project) => [
+      migratedProjects.map(({ oldProjectId, project }) => [
         project.id,
         remapCampaignSources(
-          state.campaignsByProjectId[project.id] ?? [],
+          pickProjectRecords(state.campaignsByProjectId, oldProjectId, usedCampaignKeys),
           project,
           sourceIdRemaps.get(project.id) ?? {},
         ),
       ]),
     ),
     historyByProjectId: Object.fromEntries(
-      projects.map((project) => [
+      migratedProjects.map(({ oldProjectId, project }) => [
         project.id,
-        state.historyByProjectId[project.id] ?? [],
+        pickProjectRecords(state.historyByProjectId, oldProjectId, usedHistoryKeys),
       ]),
     ),
     projects,
@@ -461,6 +566,10 @@ export function parseProjectImport(raw: string): PersistedAppState | Project {
   }
 
   if (isRecord(parsed) && Array.isArray(parsed.projects)) {
+    if (hasDuplicateImportedRoistatProjectIds(parsed)) {
+      throw new Error("Imported projects contain duplicate roistatProjectId values.");
+    }
+
     if (hasDuplicateImportedSourceKeys(parsed)) {
       throw new Error("Imported projects contain duplicate source ids, utm_source values, roistat markers, or channel ids.");
     }
