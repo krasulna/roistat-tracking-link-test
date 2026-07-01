@@ -1,4 +1,4 @@
-import type { Project, TrafficSource } from "../../entities/project/model";
+import { createRoistatMarkerForChannel, type Project, type TrafficSource } from "../../entities/project/model";
 import type { TrackingLinkDraft } from "../../entities/link/model";
 
 export function escapeRoistatLevel(value: string): string {
@@ -6,7 +6,11 @@ export function escapeRoistatLevel(value: string): string {
 }
 
 export function findSource(project: Project, utmSource: string): TrafficSource | undefined {
-  return project.allowedSources.find((source) => source.enabled && source.utmSource === utmSource);
+  return project.allowedSources.find((source) => source.utmSource === utmSource);
+}
+
+function getNextChannelId(project: Project): number {
+  return Math.max(0, ...project.allowedSources.map((source) => source.channelId)) + 1;
 }
 
 export function generateRoistatMarker(project: Project, draft: TrackingLinkDraft): string {
@@ -14,7 +18,8 @@ export function generateRoistatMarker(project: Project, draft: TrackingLinkDraft
     return draft.roistat.trim();
   }
 
-  const sourceMarker = findSource(project, draft.utmSource)?.roistatMarker ?? draft.utmSource;
+  const sourceMarker = findSource(project, draft.utmSource)?.roistatMarker
+    ?? createRoistatMarkerForChannel(draft.utmSource, getNextChannelId(project));
 
   return [sourceMarker, draft.utmMedium, draft.utmCampaign].map(escapeRoistatLevel).join("_");
 }

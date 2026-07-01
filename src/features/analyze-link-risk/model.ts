@@ -83,9 +83,18 @@ function collectWarnings(
 
   const allowedSources = project.allowedSources.filter((source) => source.enabled);
   const exactSource = allowedSources.find((source) => source.utmSource === draft.utmSource);
+  const disabledSource = project.allowedSources.find((source) => !source.enabled && source.utmSource === draft.utmSource);
   const similarSource = allowedSources.find((source) => looksSimilar(draft.utmSource, source.utmSource));
 
-  if (!exactSource) {
+  if (disabledSource) {
+    warnings.push({
+      code: "source_disabled",
+      severity: "warning",
+      title: "Источник отключен",
+      message: `Источник "${draft.utmSource}" есть в проекте, но отключен. Если вы подтвердите предупреждение, источник будет снова включен, а ссылка и кампания будут созданы с его Roistat marker.`,
+      requiresConfirmation: true,
+    });
+  } else if (!exactSource) {
     warnings.push({
       code: "source_not_allowed",
       severity: "warning",
@@ -129,14 +138,25 @@ function collectWarnings(
   }
 
   const changedTrackingParams = built.diffs.filter((diff) =>
-    ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "roistat"].includes(diff.param),
+    ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "roistat", "rs"].includes(diff.param),
   );
   if (changedTrackingParams.length > 0) {
     warnings.push({
       code: "already_marked_url",
       severity: "warning",
       title: "Исходная ссылка уже была размечена",
-      message: "В исходной ссылке уже были UTM- или Roistat-метки. Ниже показаны параметры, которые будут заменены.",
+      message: "В исходной ссылке уже были UTM- или Roistat-метки. Ниже показаны параметры, которые будут заменены или удалены.",
+      requiresConfirmation: false,
+    });
+  }
+
+  const removedTrackingParams = built.diffs.filter((diff) => diff.to === "");
+  if (removedTrackingParams.length > 0) {
+    warnings.push({
+      code: "tracking_params_removed",
+      severity: "warning",
+      title: "Часть меток будет удалена",
+      message: `Параметры ${removedTrackingParams.map((diff) => diff.param).join(", ")} были в исходной ссылке и будут удалены, потому что соответствующие поля формы пустые.`,
       requiresConfirmation: false,
     });
   }
@@ -157,7 +177,7 @@ function collectWarnings(
       code: "roistat_params_conflict",
       severity: "warning",
       title: "Конфликт дополнительных Roistat-параметров",
-      message: "В исходной ссылке уже были дополнительные Roistat-параметры. Они будут заменены значениями из формы.",
+      message: "В исходной ссылке уже были дополнительные Roistat-параметры. Они будут заменены значениями из формы или удалены, если поля формы пустые.",
       requiresConfirmation: false,
     });
   }
@@ -166,7 +186,6 @@ function collectWarnings(
     (campaign) => campaign.utmCampaign === draft.utmCampaign && getCampaignSource(project, campaign.sourceId) === draft.utmSource,
   );
   const budget = Number(draft.budget ?? 0);
-  const budgetWarnings = getCampaignBudgetWarnings(project, campaigns, budget);
 
   if (isNewCampaign && project.budgetLimit > 0 && budget > project.budgetLimit * 0.5) {
     warnings.push({
@@ -178,18 +197,22 @@ function collectWarnings(
     });
   }
 
-  for (const budgetWarning of budgetWarnings) {
-    if (budgetWarning.code === "campaign_budget_high" && warnings.some((warning) => warning.code === "new_campaign_high_budget")) {
-      continue;
-    }
+  if (isNewCampaign) {
+    const budgetWarnings = getCampaignBudgetWarnings(project, campaigns, budget);
 
-    warnings.push({
-      code: budgetWarning.code,
-      severity: "critical",
-      title: budgetWarning.title,
-      message: budgetWarning.message,
-      requiresConfirmation: !budgetWarning.blocking,
-    });
+    for (const budgetWarning of budgetWarnings) {
+      if (budgetWarning.code === "campaign_budget_high" && warnings.some((warning) => warning.code === "new_campaign_high_budget")) {
+        continue;
+      }
+
+      warnings.push({
+        code: budgetWarning.code,
+        severity: "critical",
+        title: budgetWarning.title,
+        message: budgetWarning.message,
+        requiresConfirmation: !budgetWarning.blocking,
+      });
+    }
   }
 
   return warnings;

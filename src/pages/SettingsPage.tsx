@@ -1,39 +1,11 @@
 import { Download, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useActiveProject, useAppStore, useProjectCampaigns, useProjectHistory } from "../app/store";
-import type { TrafficSource } from "../entities/project/model";
 import { Button } from "../shared/ui/Button";
 import { DemoNotice } from "../shared/ui/DemoNotice";
 import { Page } from "../shared/ui/Page";
 import styles from "./pages.module.css";
-
-function sourcesToText(sources: TrafficSource[]): string {
-  return sources.map((source) => `${source.name};${source.utmSource};${source.roistatMarker};${source.channelId}`).join("\n");
-}
-
-function sourcesFromText(value: string, fallback: TrafficSource[]): TrafficSource[] {
-  const rows = value
-    .split(/\r?\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
-
-  if (rows.length === 0) {
-    return fallback;
-  }
-
-  return rows.map((row, index) => {
-    const [name, utmSource, roistatMarker, channelId] = row.split(";").map((item) => item.trim());
-    const existing = fallback[index];
-    return {
-      id: existing?.id ?? `source_${utmSource || index}`,
-      name: name || utmSource || `Источник ${index + 1}`,
-      utmSource: utmSource || `source_${index + 1}`,
-      roistatMarker: roistatMarker || utmSource || `source_${index + 1}`,
-      channelId: Number(channelId || index + 1),
-      enabled: true,
-    };
-  });
-}
+import { getSettingsFormState, validateSettingsForm } from "./settingsForm";
 
 export function SettingsPage() {
   const project = useActiveProject();
@@ -43,28 +15,18 @@ export function SettingsPage() {
   const campaigns = useProjectCampaigns(project?.id);
   const history = useProjectHistory(project?.id);
   const [saved, setSaved] = useState(false);
+  const [formErrors, setFormErrors] = useState<string[]>([]);
 
-  const [form, setForm] = useState(() => ({
-    name: project?.name ?? "",
-    trustedDomain: project?.trustedDomain ?? "",
-    allowedDomains: project?.allowedDomains.join("\n") ?? "",
-    budgetLimit: String(project?.budgetLimit ?? 0),
-    sources: project ? sourcesToText(project.allowedSources) : "",
-  }));
+  const [form, setForm] = useState(() => getSettingsFormState(project));
 
   useEffect(() => {
     if (!project) {
       return;
     }
 
-    setForm({
-      name: project.name,
-      trustedDomain: project.trustedDomain,
-      allowedDomains: project.allowedDomains.join("\n"),
-      budgetLimit: String(project.budgetLimit),
-      sources: sourcesToText(project.allowedSources),
-    });
+    setForm(getSettingsFormState(project));
     setSaved(false);
+    setFormErrors([]);
   }, [project?.id]);
 
   const exportJson = useMemo(
@@ -97,21 +59,26 @@ export function SettingsPage() {
 
   function patchForm(key: keyof typeof form, value: string) {
     setSaved(false);
+    setFormErrors([]);
     setForm((current) => ({ ...current, [key]: value }));
   }
 
   function handleSave() {
-    updateProject(activeProject.id, {
-      name: form.name,
-      trustedDomain: form.trustedDomain,
-      allowedDomains: form.allowedDomains
-        .split(/\r?\n|,/)
-        .map((domain) => domain.trim())
-        .filter(Boolean),
-      budgetLimit: Number(form.budgetLimit),
-      allowedSources: sourcesFromText(form.sources, activeProject.allowedSources),
-    });
-    setSaved(true);
+    const validation = validateSettingsForm(form, activeProject.allowedSources);
+    if (!validation.ok) {
+      setFormErrors(validation.errors);
+      setSaved(false);
+      return;
+    }
+
+    try {
+      updateProject(activeProject.id, validation.patch);
+      setFormErrors([]);
+      setSaved(true);
+    } catch (error) {
+      setFormErrors([error instanceof Error ? error.message : "Project settings are invalid and were not saved."]);
+      setSaved(false);
+    }
   }
 
   function handleExport() {
@@ -185,6 +152,13 @@ export function SettingsPage() {
               Сохранить
             </Button>
           </div>
+          {formErrors.length > 0 ? (
+            <ul className={styles.errorList}>
+              {formErrors.map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       </section>
     </Page>

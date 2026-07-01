@@ -1,13 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Copy, QrCode } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { z } from "zod";
 import { useActiveProject, useAppStore, useProjectCampaigns } from "../app/store";
 import type { LinkCheckResult, TrackingLinkDraft } from "../entities/link/model";
+import type { Project } from "../entities/project/model";
 import { analyzeTrackingLink } from "../features/analyze-link-risk/model";
+import { isHttpUrl } from "../shared/lib/url";
 import { Button } from "../shared/ui/Button";
 import { DemoNotice } from "../shared/ui/DemoNotice";
 import { Page } from "../shared/ui/Page";
@@ -15,7 +17,11 @@ import { StatusBadge } from "../shared/ui/StatusBadge";
 import styles from "./pages.module.css";
 
 const formSchema = z.object({
-  targetUrl: z.string().url("Введите полный URL, например https://shop.example.com/catalog"),
+  targetUrl: z
+    .string()
+    .trim()
+    .url("Введите полный URL, например https://shop.example.com/catalog")
+    .refine(isHttpUrl, "Введите ссылку с протоколом http или https."),
   utmSource: z.string().min(1, "Укажите utm_source"),
   utmMedium: z.string().min(1, "Укажите utm_medium"),
   utmCampaign: z.string().min(1, "Укажите utm_campaign"),
@@ -36,6 +42,43 @@ const formSchema = z.object({
 });
 
 type LinkFormValues = z.infer<typeof formSchema>;
+
+function getWarningConfirmationKey(values: Partial<LinkFormValues>): string {
+  return [
+    values.targetUrl,
+    values.utmSource,
+    values.utmMedium,
+    values.utmCampaign,
+    values.utmTerm,
+    values.utmContent,
+    values.roistat,
+    values.roistatParam1,
+    values.roistatParam2,
+    values.roistatParam3,
+    values.roistatParam4,
+    values.roistatParam5,
+    values.budget,
+  ]
+    .map((value) => value ?? "")
+    .join("\u001f");
+}
+
+export function getCreateLinkDefaultValues(project?: Project): LinkFormValues {
+  const firstSource = project?.allowedSources.find((source) => source.enabled);
+
+  return {
+    targetUrl: project ? `https://${project.trustedDomain}/catalog` : "",
+    utmSource: firstSource?.utmSource ?? "",
+    utmMedium: "cpc",
+    utmCampaign: "brand_search",
+    utmTerm: "brand",
+    utmContent: "ad_15",
+    roistatParam1: "campaign_42",
+    roistatParam2: "ad_15",
+    budget: "",
+    confirmWarnings: false,
+  };
+}
 
 function toDraft(values: LinkFormValues): TrackingLinkDraft {
   return {
@@ -65,29 +108,50 @@ export function CreateLinkPage() {
   const [result, setResult] = useState<LinkCheckResult | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const submitVersion = useRef(0);
+  const isMounted = useRef(true);
 
-  const firstSource = project?.allowedSources.find((source) => source.enabled);
+  const defaultValues = useMemo(() => getCreateLinkDefaultValues(project), [project]);
   const {
     register,
     handleSubmit,
     control,
+    reset,
+    setValue,
     formState: { errors },
   } = useForm<LinkFormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      targetUrl: project ? `https://${project.trustedDomain}/catalog` : "",
-      utmSource: firstSource?.utmSource ?? "",
-      utmMedium: "cpc",
-      utmCampaign: "brand_search",
-      utmTerm: "brand",
-      utmContent: "ad_15",
-      roistatParam1: "campaign_42",
-      roistatParam2: "ad_15",
-      budget: "",
-      confirmWarnings: false,
-    },
+    defaultValues,
   });
   const watched = useWatch({ control });
+  const warningConfirmationKey = useMemo(() => getWarningConfirmationKey(watched), [watched]);
+  const previousWarningConfirmationKey = useRef(warningConfirmationKey);
+
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+      submitVersion.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    submitVersion.current += 1;
+    reset(defaultValues);
+    setResult(null);
+    setSubmitError("");
+    setIsChecking(false);
+  }, [defaultValues, reset]);
+
+  useEffect(() => {
+    if (previousWarningConfirmationKey.current === warningConfirmationKey) {
+      return;
+    }
+
+    previousWarningConfirmationKey.current = warningConfirmationKey;
+    if (watched.confirmWarnings) {
+      setValue("confirmWarnings", false, { shouldDirty: true });
+    }
+  }, [setValue, watched.confirmWarnings, warningConfirmationKey]);
 
   const preview = useMemo(() => {
     if (!project || !watched.targetUrl || !watched.utmSource || !watched.utmMedium || !watched.utmCampaign) {
@@ -115,7 +179,17 @@ export function CreateLinkPage() {
     setSubmitError("");
     setIsChecking(true);
     setResult({ ...nextPreview, status: "checking" });
+    const submitVersionAtStart = submitVersion.current;
+    const projectIdAtStart = project.id;
     await new Promise((resolve) => setTimeout(resolve, 2400));
+    const activeProjectId = useAppStore.getState().activeProjectId;
+    if (submitVersion.current !== submitVersionAtStart || activeProjectId !== projectIdAtStart) {
+      if (isMounted.current) {
+        setIsChecking(false);
+      }
+      return;
+    }
+
     const savedResult = createTrackingLink(project.id, draft);
     setResult(savedResult);
     setIsChecking(false);

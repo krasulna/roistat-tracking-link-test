@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useActiveProject, useAppStore, useProjectCampaigns } from "../app/store";
 import type { LinkStatus, RiskWarning } from "../entities/link/model";
 import { calculateRemainingBudget, calculateUsedBudget, getCampaignBudgetWarnings } from "../shared/lib/budget";
@@ -22,6 +22,16 @@ export function CampaignsPage() {
   const [confirmedBudgetWarnings, setConfirmedBudgetWarnings] = useState(false);
   const [formError, setFormError] = useState("");
   const [actionStatus, setActionStatus] = useState<LinkStatus | null>(null);
+  const projectId = project?.id;
+
+  useEffect(() => {
+    setSourceId("");
+    setUtmCampaign("");
+    setBudget("");
+    setConfirmedBudgetWarnings(false);
+    setFormError("");
+    setActionStatus(null);
+  }, [projectId]);
 
   if (!project) {
     return null;
@@ -51,10 +61,19 @@ export function CampaignsPage() {
 
   function handleAddCampaign() {
     setFormError("");
+    const selectedSource = activeProject.allowedSources.find((source) => source.id === selectedSourceId);
 
-    if (!utmCampaign.trim() || !selectedSourceId) {
-      setFormError("Укажите источник и utm_campaign.");
+    if (!utmCampaign.trim() || !selectedSourceId || !selectedSource) {
+      setFormError(selectedSourceId && !selectedSource ? "Выберите источник активного проекта." : "Укажите источник и utm_campaign.");
       setActionStatus("failed");
+      logHistoryEvent(activeProject.id, {
+        type: "campaign",
+        status: "failed",
+        title: "Кампания не добавлена",
+        details: selectedSourceId && !selectedSource ? "Источник не найден в активном проекте." : "Источник или utm_campaign не указан.",
+        source: selectedSource?.utmSource,
+        campaign: utmCampaign.trim() || undefined,
+      });
       return;
     }
 
@@ -62,10 +81,17 @@ export function CampaignsPage() {
     if (alreadyExists) {
       setFormError("Кампания с такой парой source + campaign уже существует.");
       setActionStatus("failed");
+      logHistoryEvent(activeProject.id, {
+        type: "campaign",
+        status: "failed",
+        title: "Кампания не добавлена",
+        details: "Кампания с такой парой source + campaign уже существует.",
+        source: selectedSource?.utmSource,
+        campaign: utmCampaign.trim(),
+      });
       return;
     }
 
-    const selectedSource = activeProject.allowedSources.find((source) => source.id === selectedSourceId);
     const budgetNumber = Number(budget);
 
     if (!budget || !Number.isFinite(budgetNumber) || budgetNumber <= 0) {

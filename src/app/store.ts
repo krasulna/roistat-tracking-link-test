@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { Campaign } from "../entities/campaign/model";
 import type { LinkCheckResult, LinkStatus, RiskWarning, TrackingLinkDraft } from "../entities/link/model";
-import type { Project, TrafficSource } from "../entities/project/model";
+import { createRoistatMarkerForChannel, projectSchema, type Project, type TrafficSource } from "../entities/project/model";
 import type { LinkHistoryItem } from "../entities/history/model";
 import { analyzeTrackingLink } from "../features/analyze-link-risk/model";
 import { createDemoProject } from "../features/create-project/mockRoistat";
@@ -91,7 +91,7 @@ function createAutoSource(project: Project, utmSource: string): TrafficSource {
     id: createId("source"),
     name: utmSource,
     utmSource,
-    roistatMarker: utmSource,
+    roistatMarker: createRoistatMarkerForChannel(utmSource, channelId),
     channelId,
     enabled: true,
   };
@@ -103,7 +103,7 @@ function pickImportedRecords<T>(
   projectCount: number,
   usedKeys: Set<string>,
 ): T[] {
-  if (records[projectId]) {
+  if (records[projectId] && !usedKeys.has(projectId)) {
     usedKeys.add(projectId);
     return records[projectId];
   }
@@ -116,6 +116,22 @@ function pickImportedRecords<T>(
   }
 
   return [];
+}
+
+function validateProject(project: Project): Project {
+  const result = projectSchema.safeParse(project);
+
+  if (!result.success) {
+    throw new Error("Project settings are invalid and were not saved.");
+  }
+
+  return result.data;
+}
+
+function filterCampaignsByProjectSources(project: Project, campaigns: Campaign[]): Campaign[] {
+  const validSourceIds = new Set(project.allowedSources.map((source) => source.id));
+
+  return campaigns.filter((campaign) => validSourceIds.has(campaign.sourceId));
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -183,29 +199,32 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
       const existingLocalIds = new Set(state.projects.map((project) => project.id));
       const importedLocalIds = new Set<string>();
-      const idMap = new Map<string, string>();
-      const projects = imported.projects.map((project) => {
+      const importedProjectPairs = imported.projects.map((project) => {
         const nextId = existingLocalIds.has(project.id) || importedLocalIds.has(project.id) ? createId("project") : project.id;
         importedLocalIds.add(nextId);
-        idMap.set(project.id, nextId);
-        return nextId === project.id ? project : { ...project, id: nextId, updatedAt: new Date().toISOString() };
+        return {
+          oldId: project.id,
+          project: nextId === project.id ? project : { ...project, id: nextId, updatedAt: new Date().toISOString() },
+        };
       });
+      const projects = importedProjectPairs.map((item) => item.project);
       const usedCampaignKeys = new Set<string>();
       const usedHistoryKeys = new Set<string>();
       const campaignsByProjectId = Object.fromEntries(
-        projects.map((project) => [
+        importedProjectPairs.map(({ oldId, project }) => [
           project.id,
-          pickImportedRecords(imported.campaignsByProjectId, project.id, projects.length, usedCampaignKeys),
+          pickImportedRecords(imported.campaignsByProjectId, oldId, projects.length, usedCampaignKeys),
         ]),
       );
       const historyByProjectId = Object.fromEntries(
-        projects.map((project) => [
+        importedProjectPairs.map(({ oldId, project }) => [
           project.id,
-          pickImportedRecords(imported.historyByProjectId, project.id, projects.length, usedHistoryKeys),
+          pickImportedRecords(imported.historyByProjectId, oldId, projects.length, usedHistoryKeys),
         ]),
       );
-      const requestedActiveProject = imported.projects.find((project) => project.id === imported.activeProjectId);
-      const activeProjectId = requestedActiveProject ? idMap.get(requestedActiveProject.id) : projects[0]?.id;
+      const requestedActiveProjectIndex = imported.projects.findIndex((project) => project.id === imported.activeProjectId);
+      const activeProjectId =
+        requestedActiveProjectIndex >= 0 ? importedProjectPairs[requestedActiveProjectIndex]?.project.id : projects[0]?.id;
 
       set((current) => {
         const next = {
@@ -225,7 +244,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         return next;
       });
 
-      return imported.projects;
+      return projects;
     }
 
     const importedProject = imported as Project;
@@ -238,10 +257,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
 
     const existingLocalIds = new Set(state.projects.map((project) => project.id));
-    const idMap = new Map<string, string>();
     const projects = importedProjects.map((project) => {
       const nextId = existingLocalIds.has(project.id) ? createId("project") : project.id;
-      idMap.set(project.id, nextId);
       return nextId === project.id ? project : { ...project, id: nextId, updatedAt: new Date().toISOString() };
     });
     const campaignsByProjectId = Object.fromEntries(
@@ -287,17 +304,36 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set((state) => {
       const project = state.projects.find((item) => item.id === projectId);
       const changedFields = Object.keys(patch);
+      const projects = state.projects.map((item) =>
+        item.id === projectId ? validateProject({ ...item, ...patch, updatedAt: new Date().toISOString() }) : item,
+      );
+      const updatedProject = projects.find((item) => item.id === projectId);
+      const previousCampaigns = state.campaignsByProjectId[projectId] ?? [];
+      const filteredCampaigns = updatedProject
+        ? filterCampaignsByProjectSources(updatedProject, previousCampaigns)
+        : previousCampaigns;
+      const removedCampaignCount = previousCampaigns.length - filteredCampaigns.length;
+      const historyDetails = [
+        changedFields.length > 0 ? `Изменены поля: ${changedFields.join(", ")}.` : "Настройки проекта сохранены.",
+        removedCampaignCount > 0
+          ? `Удалены кампании без существующего источника: ${removedCampaignCount}.`
+          : undefined,
+      ].filter(Boolean).join(" ");
       const historyItem = createHistoryItem({
         type: "settings",
         status: "success",
         title: "Настройки проекта обновлены",
-        details: changedFields.length > 0 ? `Изменены поля: ${changedFields.join(", ")}.` : "Настройки проекта сохранены.",
+        details: historyDetails,
       });
       const next = {
         ...state,
-        projects: state.projects.map((project) =>
-          project.id === projectId ? { ...project, ...patch, updatedAt: new Date().toISOString() } : project,
-        ),
+        projects,
+        campaignsByProjectId: updatedProject
+          ? {
+              ...state.campaignsByProjectId,
+              [projectId]: filteredCampaigns,
+            }
+          : state.campaignsByProjectId,
       };
       const withHistory = project ? appendHistory(next, projectId, historyItem) : next;
       persistState(toPersistedState(withHistory));
@@ -318,7 +354,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   addCampaign: (projectId, campaignInput, options) => {
-    const existingCampaign = (get().campaignsByProjectId[projectId] ?? []).find(
+    const state = get();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+
+    const source = project.allowedSources.find((item) => item.id === campaignInput.sourceId);
+    if (!source) {
+      throw new Error("Campaign source does not belong to the project.");
+    }
+
+    const existingCampaign = (state.campaignsByProjectId[projectId] ?? []).find(
       (item) => item.sourceId === campaignInput.sourceId && item.utmCampaign === campaignInput.utmCampaign,
     );
 
@@ -335,8 +382,6 @@ export const useAppStore = create<AppStore>((set, get) => ({
     };
 
     set((state) => {
-      const project = state.projects.find((item) => item.id === projectId);
-      const source = project?.allowedSources.find((item) => item.id === campaign.sourceId);
       const historyItem = createHistoryItem({
         type: "campaign",
         status: options?.status ?? "success",
@@ -388,8 +433,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const campaigns = state.campaignsByProjectId[projectId] ?? [];
     const result = analyzeTrackingLink(project, campaigns, draft);
     const now = new Date().toISOString();
-    const existingSource = project.allowedSources.find((item) => item.enabled && item.utmSource === draft.utmSource);
+    const existingSource = project.allowedSources.find((item) => item.utmSource === draft.utmSource);
     const nextSource = existingSource ?? (result.status !== "failed" ? createAutoSource(project, draft.utmSource) : undefined);
+    const sourceToAdd = !existingSource ? nextSource : undefined;
+    const shouldEnableExistingSource = Boolean(existingSource && !existingSource.enabled && result.status !== "failed");
     const existingCampaign = campaigns.find(
       (campaign) => campaign.utmCampaign === draft.utmCampaign && campaign.sourceId === nextSource?.id,
     );
@@ -436,12 +483,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
       const next = {
         ...current,
         projects:
-          !existingSource && nextSource
+          sourceToAdd || shouldEnableExistingSource
             ? current.projects.map((item) =>
                 item.id === projectId
                   ? {
                       ...item,
-                      allowedSources: [...item.allowedSources, nextSource],
+                      allowedSources:
+                        existingSource && shouldEnableExistingSource
+                          ? item.allowedSources.map((source) =>
+                              source.id === existingSource.id ? { ...source, enabled: true } : source,
+                            )
+                          : sourceToAdd
+                            ? [...item.allowedSources, sourceToAdd]
+                            : item.allowedSources,
                       updatedAt: now,
                     }
                   : item,
